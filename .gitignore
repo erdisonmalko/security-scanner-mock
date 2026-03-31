@@ -10,3 +10,4 @@ __pycache__/
 web-tool/old.scanner.js
 
 test_files/*
+./test_files/*
