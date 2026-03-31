@@ -1,0 +1,17 @@
+# Core HTTP / requests
+certifi==2026.2.25
+charset-normalizer==3.4.6
+idna==3.11
+urllib3==2.6.3
+requests==2.33.1
+
+# Env config
+python-dotenv==1.2.2
+dotenv==0.9.9
+
+# API layer
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.9.2
+typing-extensions==4.12.2
+python-multipart==0.0.22
