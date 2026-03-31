@@ -88,6 +88,18 @@ function renderResult(element, result) {
   element.innerHTML = html;
 }
 
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return Math.round(bytes / Math.pow(k, i) * 100) / 100 + ' ' + sizes[i];
+}
+
+function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function renderError(element, error) {
   element.className = "result show danger";
   element.innerHTML = `
@@ -167,14 +179,188 @@ function handleFileSelect(event) {
   }
 }
 
-// -----------------------------
-// Text Scanner (not implemented yet)
-// -----------------------------
+// ============================================
+// 3. SCAM TEXT DETECTOR IMPLEMENTATION
+// ============================================
 
-function analyzeText() {
-  const resultEl = document.getElementById("textResult");
-  renderError(resultEl, new Error("Text scanning not implemented yet"));
+async function analyzeText() {
+    const textInput = document.getElementById('textInput');
+    const resultDiv = document.getElementById('textResult');
+    const text = textInput.value.trim();
+
+    if (!text) {
+        renderResult(resultDiv, 'warning', 'Please enter text', 'You need to provide text to analyze.');
+        return;
+    }
+
+    setLoading(resultDiv, true);
+
+    // Simulate API delay for now
+    await delay(1800);
+
+    // Run text analysis
+    const analysis = analyzeTextForScams(text);
+
+    const riskScore = analysis.threats.length;
+    
+    if (riskScore === 0) {
+        renderResult(resultDiv, 'safe', '✅ Text appears legitimate', 
+            'No obvious phishing patterns detected. However, always verify sender identity through official channels.');
+    } else if (riskScore <= 2) {
+        let threatHtml = '<ul class="threat-list">';
+        analysis.threats.forEach(threat => {
+            threatHtml += `<li><span class="badge ${threat.severity}">${threat.severity.toUpperCase()}</span> ${threat.description}</li>`;
+        });
+        threatHtml += '</ul>';
+        
+        renderResult(resultDiv, 'warning', '⚠️ Some suspicious elements detected', 
+            'This message contains patterns commonly found in phishing attempts:' + threatHtml);
+    } else {
+        let threatHtml = '<ul class="threat-list">';
+        analysis.threats.forEach(threat => {
+            threatHtml += `<li><span class="badge ${threat.severity}">${threat.severity.toUpperCase()}</span> ${threat.description}</li>`;
+        });
+        threatHtml += '</ul>';
+        
+        renderResult(resultDiv, 'danger', '🚨 High risk of phishing/scam', 
+            'This message shows multiple red flags typical of scam attempts:' + threatHtml);
+    }
 }
+
+function analyzeTextForScams(text) {
+    const threats = [];
+    const lowerText = text.toLowerCase();
+
+    // Extract URLs from text
+    const urlRegex = /(https?:\/\/[^\s]+)/gi;
+    const urls = text.match(urlRegex) || [];
+
+    // Check for urgency language
+    const urgencyPhrases = [
+        'act now', 'urgent', 'immediate action', 'within 24 hours',
+        'account will be closed', 'suspended', 'expire', 'limited time',
+        'verify immediately', 'confirm now', 'update required',
+        'unusual activity', 'suspicious activity', 'unauthorized'
+    ];
+
+    urgencyPhrases.forEach(phrase => {
+        if (lowerText.includes(phrase)) {
+            threats.push({
+                severity: 'high',
+                description: `Urgency tactic: "${phrase}" (pressure to act quickly)`
+            });
+        }
+    });
+
+    // Check for financial/personal info requests
+    const sensitiveRequests = [
+        'social security', 'ssn', 'password', 'pin code', 'credit card',
+        'bank account', 'routing number', 'date of birth', 'mothers maiden',
+        'verify your identity', 'confirm your details', 'update payment'
+    ];
+
+    sensitiveRequests.forEach(request => {
+        if (lowerText.includes(request)) {
+            threats.push({
+                severity: 'high',
+                description: `Requests sensitive information: "${request}"`
+            });
+        }
+    });
+
+    // Check for suspicious sender patterns
+    const senderPatterns = [
+        'dear customer', 'dear user', 'dear member', 'valued customer',
+        'account holder', 'attention'
+    ];
+
+    senderPatterns.forEach(pattern => {
+        if (lowerText.includes(pattern)) {
+            threats.push({
+                severity: 'medium',
+                description: `Generic greeting: "${pattern}" (legitimate companies use your name)`
+            });
+        }
+    });
+
+    // Check for threats/consequences
+    const threatPhrases = [
+        'account will be closed', 'lose access', 'legal action',
+        'charged', 'penalty', 'arrest', 'warrant', 'irs', 'tax authority'
+    ];
+
+    threatPhrases.forEach(phrase => {
+        if (lowerText.includes(phrase)) {
+            threats.push({
+                severity: 'high',
+                description: `Threatening language: "${phrase}" (scare tactic)`
+            });
+        }
+    });
+
+    // Check for reward/prize claims
+    const rewardPhrases = [
+        'congratulations', 'you won', 'winner', 'prize', 'claim your',
+        'free gift', 'selected', 'lucky', 'refund'
+    ];
+
+    rewardPhrases.forEach(phrase => {
+        if (lowerText.includes(phrase)) {
+            threats.push({
+                severity: 'medium',
+                description: `Unsolicited reward claim: "${phrase}"`
+            });
+        }
+    });
+
+    // Analyze URLs in the message
+    if (urls.length > 0) {
+        urls.forEach(url => {
+            try {
+                const parsedUrl = new URL(url);
+                const urlAnalysis = analyzeURLSecurity(parsedUrl);
+                
+                if (urlAnalysis.threats.length > 0) {
+                    threats.push({
+                        severity: 'high',
+                        description: `Suspicious link detected: ${parsedUrl.hostname}`
+                    });
+                }
+            } catch (e) {
+                // Invalid URL
+                threats.push({
+                    severity: 'medium',
+                    description: 'Malformed URL detected in text'
+                });
+            }
+        });
+    }
+
+    // Check for poor grammar/spelling (not perfect but helps)
+    const grammarIssues = [
+        'kindly', 'needful', 'revert back', 'do the needful'
+    ];
+
+    grammarIssues.forEach(issue => {
+        if (lowerText.includes(issue)) {
+            threats.push({
+                severity: 'low',
+                description: `Unusual phrasing: "${issue}" (common in phishing from non-native speakers)`
+            });
+        }
+    });
+
+    // Check for excessive punctuation
+    if ((text.match(/!!!/g) || []).length > 0 || (text.match(/\?\?\?/g) || []).length > 0) {
+        threats.push({
+            severity: 'low',
+            description: 'Excessive punctuation (!!!  or ???) - unprofessional'
+        });
+    }
+
+    return { threats };
+}
+
 
 // -----------------------------
 // Init (optional future hooks)
