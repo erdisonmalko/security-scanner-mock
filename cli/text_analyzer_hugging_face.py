@@ -15,22 +15,24 @@ from dataclasses import dataclass, field
 # SENTIMENT ANALYSIS INTEGRATION
 # ============================================
 @dataclass
-class ThreatResult:
-    """Result of a security scan"""
-    is_safe: bool
-    confidence: float  # 0.0 to 1.0
-    threats: List[Dict] = field(default_factory=list)
+class TextThreat:
+    """Individual threat found in text"""
+    category: str
+    severity: str  # low, medium, high, critical
+    description: str
+    evidence: List[str] = field(default_factory=list)
+    sentiment_data: Dict = field(default_factory=dict)
+
+
+@dataclass
+class TextScanResult:
+    """Result of text analysis"""
+    is_scam: bool
+    risk_score: float  # 0.0 to 1.0
+    threats: List[TextThreat] = field(default_factory=list)
+    sentiment: Dict = field(default_factory=dict)
     metadata: Dict = field(default_factory=dict)
-    
-    def add_threat(self, severity: str, category: str, description: str, details: Dict = None):
-        """Add a threat to the result"""
-        self.threats.append({
-            'severity': severity,  # low, medium, high, critical
-            'category': category,
-            'description': description,
-            'details': details or {}
-        })
-        self.is_safe = False
+
 
         
 class SentimentAnalyzer:
@@ -160,26 +162,6 @@ class SentimentAnalyzer:
 # ============================================
 # ENHANCED TEXT SCANNER
 # ============================================
-
-@dataclass
-class TextThreat:
-    """Individual threat found in text"""
-    category: str
-    severity: str  # low, medium, high, critical
-    description: str
-    evidence: List[str] = field(default_factory=list)
-    sentiment_data: Dict = field(default_factory=dict)
-
-
-@dataclass
-class TextScanResult:
-    """Result of text analysis"""
-    is_scam: bool
-    risk_score: float  # 0.0 to 1.0
-    threats: List[TextThreat] = field(default_factory=list)
-    sentiment: Dict = field(default_factory=dict)
-    metadata: Dict = field(default_factory=dict)
-
 
 class EnhancedTextScanner:
     """
