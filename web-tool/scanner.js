@@ -25,7 +25,6 @@ async function apiRequest(endpoint, payload, isFormData = false) {
     }
 
     const res = await fetch(`${API_BASE}${endpoint}`, options);
-
     if (!res.ok) {
       const text = await res.text();
       throw new Error(text || "API error");
@@ -85,6 +84,21 @@ function renderResult(element, result) {
   }
 
   element.className = `result show ${statusClass}`;
+  element.innerHTML = html;
+}
+
+function renderSentimentResult(element, result) {
+  element.classList.add("show");
+  let sentimentClass = "neutral";
+  if (result.sentiment === "POSITIVE") sentimentClass = "safe";
+  else if (result.sentiment === "NEGATIVE") sentimentClass = "danger";
+
+  const html = `
+    <div class="result-title">Sentiment: ${result.sentiment}</div>
+    <div class="result-details">Confidence: ${(result.confidence * 100).toFixed(0)}%</div>
+  `;
+
+  element.className = `result show ${sentimentClass}`;
   element.innerHTML = html;
 }
 
@@ -184,183 +198,35 @@ function handleFileSelect(event) {
 // ============================================
 
 async function analyzeText() {
-    const textInput = document.getElementById('textInput');
-    const resultDiv = document.getElementById('textResult');
-    const text = textInput.value.trim();
+  const textInput = document.getElementById("textInput");
+  const resultEl = document.getElementById("textResult");
 
-    if (!text) {
-        renderResult(resultDiv, 'warning', 'Please enter text', 'You need to provide text to analyze.');
-        return;
-    }
+  const text = textInput.value.trim();
 
-    setLoading(resultDiv, true);
+  if (!text) {
+    renderError(resultEl, new Error("Please enter text"));
+    return;
+  }
 
-    // Simulate API delay for now
-    await delay(1800);
+  try {
+    setLoading(resultEl, true);
 
-    // Run text analysis
-    const analysis = analyzeTextForScams(text);
+    const result = await apiRequest("/huggingface/scan/text", { text });
+    renderSentimentResult(resultEl, result);
 
-    const riskScore = analysis.threats.length;
-    
-    if (riskScore === 0) {
-        renderResult(resultDiv, 'safe', '✅ Text appears legitimate', 
-            'No obvious phishing patterns detected. However, always verify sender identity through official channels.');
-    } else if (riskScore <= 2) {
-        let threatHtml = '<ul class="threat-list">';
-        analysis.threats.forEach(threat => {
-            threatHtml += `<li><span class="badge ${threat.severity}">${threat.severity.toUpperCase()}</span> ${threat.description}</li>`;
-        });
-        threatHtml += '</ul>';
-        
-        renderResult(resultDiv, 'warning', '⚠️ Some suspicious elements detected', 
-            'This message contains patterns commonly found in phishing attempts:' + threatHtml);
-    } else {
-        let threatHtml = '<ul class="threat-list">';
-        analysis.threats.forEach(threat => {
-            threatHtml += `<li><span class="badge ${threat.severity}">${threat.severity.toUpperCase()}</span> ${threat.description}</li>`;
-        });
-        threatHtml += '</ul>';
-        
-        renderResult(resultDiv, 'danger', '🚨 High risk of phishing/scam', 
-            'This message shows multiple red flags typical of scam attempts:' + threatHtml);
-    }
+  } catch (err) {
+    renderError(resultEl, err);
+  }
 }
 
-function analyzeTextForScams(text) {
-    const threats = [];
-    const lowerText = text.toLowerCase();
+document.addEventListener("DOMContentLoaded", () => {
+  const textInput = document.getElementById("textInput");
+  const analyzeBtn = document.getElementById("analyzeText");
 
-    // Extract URLs from text
-    const urlRegex = /(https?:\/\/[^\s]+)/gi;
-    const urls = text.match(urlRegex) || [];
-
-    // Check for urgency language
-    const urgencyPhrases = [
-        'act now', 'urgent', 'immediate action', 'within 24 hours',
-        'account will be closed', 'suspended', 'expire', 'limited time',
-        'verify immediately', 'confirm now', 'update required',
-        'unusual activity', 'suspicious activity', 'unauthorized'
-    ];
-
-    urgencyPhrases.forEach(phrase => {
-        if (lowerText.includes(phrase)) {
-            threats.push({
-                severity: 'high',
-                description: `Urgency tactic: "${phrase}" (pressure to act quickly)`
-            });
-        }
-    });
-
-    // Check for financial/personal info requests
-    const sensitiveRequests = [
-        'social security', 'ssn', 'password', 'pin code', 'credit card',
-        'bank account', 'routing number', 'date of birth', 'mothers maiden',
-        'verify your identity', 'confirm your details', 'update payment'
-    ];
-
-    sensitiveRequests.forEach(request => {
-        if (lowerText.includes(request)) {
-            threats.push({
-                severity: 'high',
-                description: `Requests sensitive information: "${request}"`
-            });
-        }
-    });
-
-    // Check for suspicious sender patterns
-    const senderPatterns = [
-        'dear customer', 'dear user', 'dear member', 'valued customer',
-        'account holder', 'attention'
-    ];
-
-    senderPatterns.forEach(pattern => {
-        if (lowerText.includes(pattern)) {
-            threats.push({
-                severity: 'medium',
-                description: `Generic greeting: "${pattern}" (legitimate companies use your name)`
-            });
-        }
-    });
-
-    // Check for threats/consequences
-    const threatPhrases = [
-        'account will be closed', 'lose access', 'legal action',
-        'charged', 'penalty', 'arrest', 'warrant', 'irs', 'tax authority'
-    ];
-
-    threatPhrases.forEach(phrase => {
-        if (lowerText.includes(phrase)) {
-            threats.push({
-                severity: 'high',
-                description: `Threatening language: "${phrase}" (scare tactic)`
-            });
-        }
-    });
-
-    // Check for reward/prize claims
-    const rewardPhrases = [
-        'congratulations', 'you won', 'winner', 'prize', 'claim your',
-        'free gift', 'selected', 'lucky', 'refund'
-    ];
-
-    rewardPhrases.forEach(phrase => {
-        if (lowerText.includes(phrase)) {
-            threats.push({
-                severity: 'medium',
-                description: `Unsolicited reward claim: "${phrase}"`
-            });
-        }
-    });
-
-    // Analyze URLs in the message
-    if (urls.length > 0) {
-        urls.forEach(url => {
-            try {
-                const parsedUrl = new URL(url);
-                const urlAnalysis = analyzeURLSecurity(parsedUrl);
-                
-                if (urlAnalysis.threats.length > 0) {
-                    threats.push({
-                        severity: 'high',
-                        description: `Suspicious link detected: ${parsedUrl.hostname}`
-                    });
-                }
-            } catch (e) {
-                // Invalid URL
-                threats.push({
-                    severity: 'medium',
-                    description: 'Malformed URL detected in text'
-                });
-            }
-        });
-    }
-
-    // Check for poor grammar/spelling (not perfect but helps)
-    const grammarIssues = [
-        'kindly', 'needful', 'revert back', 'do the needful'
-    ];
-
-    grammarIssues.forEach(issue => {
-        if (lowerText.includes(issue)) {
-            threats.push({
-                severity: 'low',
-                description: `Unusual phrasing: "${issue}" (common in phishing from non-native speakers)`
-            });
-        }
-    });
-
-    // Check for excessive punctuation
-    if ((text.match(/!!!/g) || []).length > 0 || (text.match(/\?\?\?/g) || []).length > 0) {
-        threats.push({
-            severity: 'low',
-            description: 'Excessive punctuation (!!!  or ???) - unprofessional'
-        });
-    }
-
-    return { threats };
-}
-
+  textInput.addEventListener("input", () => {
+    analyzeBtn.disabled = textInput.value.trim().length === 0;
+  });
+});
 
 // -----------------------------
 // Init (optional future hooks)

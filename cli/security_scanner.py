@@ -11,10 +11,11 @@ This tool demonstrates how security scanners actually work:
 
 import os
 import re
-import sys
+# import sys
 import json
-import time
+# import time
 import hashlib
+# from unittest import result
 import requests
 from pathlib import Path
 from urllib.parse import urlparse, unquote
@@ -23,6 +24,8 @@ import argparse
 from dataclasses import dataclass, field
 import math
 from collections import Counter
+from openai import OpenAI
+import json
 
 # ============================================
 # CONFIGURATION
@@ -33,6 +36,7 @@ class ScannerConfig:
     """Configuration for the scanner"""
     google_api_key: Optional[str] = None
     virustotal_api_key: Optional[str] = None
+    openai_api_key: Optional[str] = None
     cache_results: bool = True
     verbose: bool = False
     
@@ -42,6 +46,7 @@ class ScannerConfig:
         return cls(
             google_api_key=os.getenv('GOOGLE_SAFE_BROWSING_API_KEY'),
             virustotal_api_key=os.getenv('VIRUSTOTAL_API_KEY'),
+            openai_api_key=os.getenv('OPENAI_API_KEY')
         )
 
 
@@ -134,6 +139,7 @@ class URLScanner:
         
         # If local analysis passed, verify with Google Safe Browsing
         if self.config.google_api_key and len(result.threats) > 0:
+            print("Local analysis found potential threats, verifying with Google Safe Browsing...")
             self._check_google_safe_browsing(url, result)
         
         return result
@@ -565,18 +571,17 @@ class FileScanner:
         self.config = config
     
     def scan(self, file_path: str) -> ThreatResult:
-        """Perform comprehensive file analysis"""
         result = ThreatResult(is_safe=True, confidence=0.7)
-        
+
         if not os.path.exists(file_path):
             result.add_threat('high', 'file_not_found', f'File does not exist: {file_path}')
             return result
-        
+
         file_path = Path(file_path)
         result.metadata['filename'] = file_path.name
         result.metadata['size'] = os.path.getsize(file_path)
         result.metadata['extension'] = file_path.suffix.lower()
-        
+
         # Run all analysis checks
         self._check_extension(file_path, result)
         self._check_magic_bytes(file_path, result)
@@ -584,11 +589,33 @@ class FileScanner:
         self._extract_strings(file_path, result)
         self._check_pe_structure(file_path, result)
         self._calculate_hash(file_path, result)
-        
-        # If local analysis shows warnings, verify with VirusTotal
+
+        print(f"""
+            Completed local analysis for {file_path.name}.
+            Found {len(result.threats)} potential threats.
+            """)
+
+        # VirusTotal (only if needed)
         if self.config.virustotal_api_key and len(result.threats) > 0:
+            print("Local analysis found potential threats, verifying with VirusTotal...")
             self._check_virustotal(file_path, result)
-        
+
+        # Final heuristic correlation
+        self._final_risk_adjustment(file_path, result)
+
+        # ✅ NOW compute final confidence + safety
+        threat_count = len(result.threats)
+
+        if threat_count == 0:
+            result.confidence = 0.9
+            result.is_safe = True
+        elif threat_count == 1:
+            result.confidence = 0.6
+            result.is_safe = True
+        else:
+            result.confidence = 0.3
+            result.is_safe = False
+
         return result
     
     def _check_extension(self, file_path: Path, result: ThreatResult):
@@ -948,6 +975,7 @@ class FileScanner:
             response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 200:
+                print("File found in VirusTotal database, analyzing results...")
                 data = response.json()
                 stats = data['data']['attributes']['last_analysis_stats']
                 
@@ -976,6 +1004,7 @@ class FileScanner:
                     result.add_threat('medium', 'virustotal_suspicious',
                                     f'Flagged as suspicious by {suspicious} engines',
                                     {'suspicious': suspicious})
+                print(f"VirusTotal detection rate: {malicious}/{total} engines flagged this file.")
             
             elif response.status_code == 404:
                 # File not in database - upload it (costs 1 request)
@@ -992,6 +1021,8 @@ class FileScanner:
                         result.metadata['virustotal'] = 'UPLOADED - Check back in 1 minute'
                     else:
                         result.metadata['virustotal'] = f'Upload failed: {upload_response.status_code}'
+                
+                print("File not found in VirusTotal. Uploaded for analysis. Check back in a few minutes for results.")
             
             else:
                 result.metadata['virustotal'] = f'ERROR: {response.status_code}'
@@ -1001,7 +1032,248 @@ class FileScanner:
             if self.config.verbose:
                 print(f"  VirusTotal API error: {e}")
 
+    
+    def _final_risk_adjustment(self, file_path: Path, result: ThreatResult):
+        ext = file_path.suffix[1:].lower()
 
+        entropy = result.metadata.get('entropy', 0)
+        threats = result.threats
+
+        has_suspicious_strings = any(t['category'] == 'suspicious_strings' for t in threats)
+
+        # 🔴 Strong heuristic: script + entropy + commands
+        if ext in ['py', 'sh', 'js'] and entropy > 5.5 and has_suspicious_strings:
+            result.add_threat(
+                'high',
+                'obfuscated_script',
+                'Script file with obfuscation + execution indicators',
+                {
+                    'entropy': entropy,
+                    'extension': ext,
+                    'danger': 'Likely obfuscated or staged payload'
+                }
+            )
+
+
+class TextScanner:
+    def __init__(self, config: ScannerConfig):
+        self.config = config
+
+    def analyze_text_for_scams(self, text: str) -> ThreatResult:
+        result = ThreatResult(is_safe=True, confidence=0.7)
+        lower_text = text.lower()
+
+        # --- Extract URLs ---
+        urls = re.findall(r'(https?://[^\s]+)', text)
+
+        # --- Urgency ---
+        urgency_phrases = [
+            'act now', 'urgent', 'immediate action', 'within 24 hours',
+            'account will be closed', 'suspended', 'expire', 'limited time',
+            'verify immediately', 'confirm now', 'update required',
+            'unusual activity', 'suspicious activity', 'unauthorized'
+        ]
+
+        for phrase in urgency_phrases:
+            if phrase in lower_text:
+                result.add_threat('high', 'urgency', f'Urgency tactic: "{phrase}"')
+
+        # --- Sensitive info ---
+        sensitive_requests = [
+            'password', 'pin code', 'credit card', 'bank account',
+            'verify your identity', 'confirm your details', 'update payment'
+        ]
+
+        for req in sensitive_requests:
+            if req in lower_text:
+                result.add_threat('high', 'sensitive_info', f'Requests sensitive info: "{req}"')
+
+        # --- Generic greetings ---
+        sender_patterns = [
+            'dear customer', 'dear user', 'valued customer', 'account holder'
+        ]
+
+        for pattern in sender_patterns:
+            if pattern in lower_text:
+                result.add_threat('medium', 'generic_greeting', f'Generic greeting: "{pattern}"')
+
+        # --- Threat language ---
+        threat_phrases = [
+            'legal action', 'penalty', 'arrest', 'warrant'
+        ]
+
+        for phrase in threat_phrases:
+            if phrase in lower_text:
+                result.add_threat('high', 'threat_language', f'Threatening language: "{phrase}"')
+
+        # --- Rewards ---
+        reward_phrases = [
+            'you won', 'winner', 'claim your', 'free gift'
+        ]
+
+        for phrase in reward_phrases:
+            if phrase in lower_text:
+                result.add_threat('medium', 'reward', f'Suspicious reward: "{phrase}"')
+
+        # --- URLs ---
+        if urls:
+            result.metadata['urls'] = urls
+            if len(urls) > 2:
+                result.add_threat('medium', 'multiple_urls', f'{len(urls)} URLs found')
+
+        # --- Grammar ---
+        grammar_issues = ['kindly', 'do the needful']
+        for issue in grammar_issues:
+            if issue in lower_text:
+                result.add_threat('low', 'grammar', f'Unusual phrasing: "{issue}"')
+
+        # --- Final scoring ---
+        self._finalize(result)
+
+        return result
+
+
+    def analyze_text_with_ai(self, text: str) -> Dict:
+        """
+        Use OpenAI to analyze text for scam/phishing risk.
+        Returns structured result.
+        """
+
+        if not self.config.openai_api_key:
+            return {"ai_used": False}
+
+        try:
+            client = OpenAI(api_key=self.config.openai_api_key)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # cheap + good enough
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a cybersecurity assistant. "
+                            "Analyze text for scam/phishing indicators.\n\n"
+                            "Return ONLY valid JSON in this format:\n"
+                            "{"
+                            '"risk": "low|medium|high",'
+                            '"reasons": ["reason1", "reason2"],'
+                            '"summary": "short explanation"'
+                            "}"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ],
+                temperature=0.2
+            )
+
+            content = response.choices[0].message.content
+
+            # Try to parse JSON safely
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = {
+                    "risk": "unknown",
+                    "reasons": [],
+                    "summary": content[:200]
+                }
+
+            return {"ai_used": True, "result": parsed}
+                
+        except Exception as e:
+            if self.config.verbose:
+                print(f"AI analysis failed: {e}")
+            return {"ai_used": False, "error": str(e)}
+
+    def analyze_text_with_ai(self, text: str) -> Dict:
+        """
+        Use OpenAI to analyze text for scam/phishing risk.
+        Returns structured result.
+        """
+
+        if not self.config.openai_api_key:
+            return {"ai_used": False}
+
+        try:
+            client = OpenAI(api_key=self.config.openai_api_key)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # cheap + good enough
+                messages=[
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a cybersecurity assistant. "
+                            "Analyze text for scam/phishing indicators.\n\n"
+                            "Return ONLY valid JSON in this format:\n"
+                            "{"
+                            '"risk": "low|medium|high",'
+                            '"reasons": ["reason1", "reason2"],'
+                            '"summary": "short explanation"'
+                            "}"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": text
+                    }
+                ],
+                temperature=0.2
+            )
+
+            content = response.choices[0].message.content
+
+            # Try to parse JSON safely
+            try:
+                parsed = json.loads(content)
+            except Exception:
+                parsed = {
+                    "risk": "unknown",
+                    "reasons": [],
+                    "summary": content[:200]
+                }
+
+            return {"ai_used": True, "result": parsed}
+                
+        except Exception as e:
+            if self.config.verbose:
+                print(f"AI analysis failed: {e}")
+            return {"ai_used": False, "error": str(e)}
+
+    def _finalize(self, result: ThreatResult):
+        n = len(result.threats)
+
+        if n == 0:
+            result.confidence = 0.9
+        elif n == 1:
+            result.confidence = 0.6
+        else:
+            result.confidence = 0.3
+            result.is_safe = False
+
+    def scan(self, text: str) -> ThreatResult:
+        """Main entry point for text scanning (CLI + API)"""
+
+        result = self.analyze_text_for_scams(text)
+
+        # Decide if escalation is needed
+        high_count = sum(1 for t in result.threats if t['severity'] in ('high', 'critical'))
+
+        if high_count >= 1 and self.config.openai_api_key:
+            print("High-risk indicators found in text, performing AI analysis...")
+            ai_result = self.analyze_text_with_ai(text)
+            result.metadata['ai'] = ai_result
+
+            # Optional: adjust confidence slightly
+            if ai_result.get("ai_used") and ai_result.get("result", {}).get("risk") == "high":
+                result.is_safe = False
+                result.confidence = min(result.confidence, 0.3)
+
+        return result
+    
 # ============================================
 # MAIN CLI INTERFACE
 # ============================================
@@ -1081,11 +1353,12 @@ Examples:
     parser.add_argument('-u', '--url', action='append', help='URL to scan (can specify multiple)')
     parser.add_argument('-f', '--file', action='append', help='File to scan (can specify multiple)')
     parser.add_argument('-v', '--verbose', action='store_true', help='Verbose output')
+    parser.add_argument('-t', '--text', action='append', help='Text to scan (can specify multiple)')
     parser.add_argument('--no-api', action='store_true', help='Skip API verification even if keys are set')
     
     args = parser.parse_args()
     
-    if not args.url and not args.file:
+    if not args.url and not args.file and not args.text:
         parser.print_help()
         return
     
@@ -1102,6 +1375,7 @@ Examples:
     print("=" * 60)
     print(f"Google Safe Browsing: {'✓ Enabled' if config.google_api_key else '✗ Disabled (set GOOGLE_SAFE_BROWSING_API_KEY)'}")
     print(f"VirusTotal: {'✓ Enabled' if config.virustotal_api_key else '✗ Disabled (set VIRUSTOTAL_API_KEY)'}")
+    print(f"AI Analysis: {'✓ Enabled' if getattr(config, 'openai_api_key', None) else '✗ Disabled (set OPENAI_API_KEY)'}")
     print("=" * 60)
     
     # Scan URLs
@@ -1121,7 +1395,17 @@ Examples:
             print("-" * 60)
             result = scanner.scan(file_path)
             print_result(result, args.verbose)
+    # Scan text
+    if args.text:
+        scanner = TextScanner(config)
 
+        for text in args.text:
+            print(f"\n Scanning Text:")
+            print("-" * 60)
+            print(f"   \"{text[:80]}{'...' if len(text) > 80 else ''}\"")
 
+            result = scanner.scan(text)
+
+            print_result(result, args.verbose)
 if __name__ == '__main__':
     main()
