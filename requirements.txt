@@ -15,3 +15,5 @@ uvicorn==0.30.6
 pydantic==2.9.2
 typing-extensions==4.12.2
 python-multipart==0.0.22
+# AI analysis(openai)
+openai>=1.0.0
