@@ -26,7 +26,6 @@ import math
 from collections import Counter
 from openai import OpenAI
 import json
-
 # ============================================
 # CONFIGURATION
 # ============================================

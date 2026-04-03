@@ -10,7 +10,6 @@ import json
 import requests
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
-
 # ============================================
 # SENTIMENT ANALYSIS INTEGRATION
 # ============================================
@@ -67,36 +66,45 @@ class SentimentAnalyzer:
 
         try:
             response = requests.post(
-                    API_URL,
-                    headers=headers,
-                    json={"inputs": text, "options": {"wait_for_model": True}},
-                    timeout=20
-                )
-            
-            if response.status_code == 200:
-                result = response.json()
-                
-                # This specific model returns: [[{'label': 'LABEL_0', 'score': 0.99}, ...]]
-                if isinstance(result, list) and len(result) > 0:
-                    data = result[0] if isinstance(result[0], list) else result
-                    
-                    # The model sorts by highest score, so index 0 is your result
-                    sentiment = data[0]['label']
-                    confidence = data[0]['score']
-                    
-                    return {
-                        'sentiment': sentiment,
-                        'confidence': confidence,
-                        'provider': 'huggingface'
-                    }
-            else:
-                return {'error': f'HTTP {response.status_code}', 'msg': response.text}
+                API_URL,
+                headers=headers,
+                json={"inputs": text, "options": {"wait_for_model": True}},
+                timeout=20
+            )
 
-                
+            data = response.json()
+            print(f"Debug: Hugging Face API response: {json.dumps(data, indent=2)}")  # Debug log
+            if response.status_code != 200:
+                return {'error': f'HTTP {response.status_code}', 'msg': data}
+
+            # --- Normalize response safely ---
+            item = None
+
+            if isinstance(data, list):
+                # flatten nested lists
+                if len(data) > 0 and isinstance(data[0], list):
+                    data = data[0]
+
+                if len(data) > 0 and isinstance(data[0], dict):
+                    item = data[0]
+
+            elif isinstance(data, dict) and "label" in data:
+                item = data
+
+            if not item:
+                return {
+                    'error': 'Could not extract sentiment',
+                    'raw': data
+                }
+
+            return {
+                'sentiment': item.get('label'),
+                'confidence': item.get('score'),
+                'provider': 'huggingface'
+            }
+
         except Exception as e:
             return {'error': str(e)}
-        
-        return {'error': 'Unknown error'}
     
     def analyze_google(self, text: str) -> Dict:
         """
