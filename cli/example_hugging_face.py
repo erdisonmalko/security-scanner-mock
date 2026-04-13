@@ -15,5 +15,9 @@ http://fakebank-login.example.com
 """
 scanner = SentimentAnalyzer(provider="huggingface")
 result = scanner.analyze(text)  # returns dict
-serialize_sentiment = serialize_sentiment_result(result)
-print(f"Sentiment Analysis Result: {serialize_sentiment}")
+
+if 'error' in result.keys():
+    print(f"Error: {result['error']}")
+else:
+    serialize_sentiment = serialize_sentiment_result(result)
+    print(f"Sentiment Analysis Result: {serialize_sentiment}")
